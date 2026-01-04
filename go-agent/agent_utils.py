@@ -7,6 +7,20 @@ from claude_agent_sdk import (
     AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock, ResultMessage
 )
 
+import logging
+
+
+def read_system_prompt(filename: str = "system_prompt.md") -> str:
+    """
+    Reads the system prompt from a markdown file.
+    """
+    if not os.path.exists(filename):
+        logging.warning(f"System prompt file {filename} not found. Using default prompt.")
+        return ""
+
+    with open(filename, 'r') as f:
+        return f.read()
+
 
 def run_tests_and_get_coverage(repo_path: str) -> Tuple[bool, Optional[str], Optional[str]]:
     """
@@ -77,6 +91,72 @@ def get_total_coverage(repo_path: str) -> Tuple[bool, Optional[float], Optional[
 
     return True, total_coverage, None
 
+
+def check_if_expected_blocks_covered(repo_path: str, filename: str, data: dict) -> Tuple[bool, bool, Optional[str]]:
+    """
+    Check if all expected blocks in the coverage data are covered.
+    """
+
+    try:
+
+        go_mod_file = f"{repo_path}/go.mod"
+        module_name = None
+
+        with open(go_mod_file, 'r') as f:
+            lines = f.readlines()
+
+        for line in lines:
+            if line.startswith("module"):
+                module_name = line.split()[1].strip()
+                break
+
+        if module_name is None:
+            return False, False, "Module name not found in go.mod"
+
+        if not os.path.exists(f"{repo_path}/coverage.out"):
+            return False, False, "Coverage output file does not exist."
+
+        with open(f"{repo_path}/coverage.out", 'r') as f:
+            lines = f.readlines()
+
+        for line in lines[1:]:  # Skip the first line
+            parts = line.split()
+            if len(parts) < 3:
+                continue 
+
+            block = parts[0].split(':')[0]
+            filename = block.replace(data['module_name'], '').lstrip('/')
+            block_statements = int(parts[1])
+            is_covered = True if int(parts[2]) else False
+
+
+            blocks_not_covered = []
+
+            if filename == data['filename']:
+                for expected_block in data['blocks']:
+                    block_info = parts[0].split(':')[-1]
+                    start = block_info.split(',')[0]
+                    end = block_info.split(',')[1]
+
+                    if start == expected_block['start'] and end == expected_block['end']:
+                        if is_covered == 0:
+                            blocks_not_covered.append({
+                                "start": start,
+                                "end": end
+                            })
+
+            if len(blocks_not_covered) == 0:
+                return True, True, "All expected blocks are covered."
+
+        return_str = f"After running the tests you generated for File: {filename}, the following uncovered blocks remain\nUncovered Blocks:\n"
+        for block in blocks_not_covered:
+            return_str += f"- Start: {block['start']}, End: {block['end']}\n"
+
+        return True, False, return_str
+
+    except Exception as e:
+        return False, False, f"Exception occurred: {str(e)}"
+    
 
 def calculate_per_file_coverage(repo_path: str) -> Tuple[bool, Optional[dict], Optional[str]]:
     """

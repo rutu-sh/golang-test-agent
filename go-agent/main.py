@@ -1,6 +1,8 @@
-import os 
+import os
 import asyncio
+import argparse
 import logging
+import copy
 import subprocess
 from dotenv import load_dotenv
 from typing import Optional, Tuple
@@ -8,6 +10,7 @@ from typing import Optional, Tuple
 from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
 import agent_utils
+import agent_hooks
 from models import (
     MachineStateStart,
     MachineStateAnalyze,
@@ -22,161 +25,7 @@ from models import (
     MAX_STATE_LOOP_ITERATIONS,
 )
 
-
-system_prompt = """
-You are a Go testing assistant specialized in achieving comprehensive test coverage.
-Your task is to either write new tests or fix existing ones:
-
-1.  Context: User wants to improve test coverage for thier Go codebase.
-    Prompt: Write tests for uncovered lines in File: /path/to/file.go
-    Input Format:
-            File: /path/to/file.go
-            Uncovered Blocks:
-            - Start: 10.1, End: 15.5
-            - Start: 30.2, End: 35.7
-    Explanation:
-        The Start and End indicate line.column positions of uncovered code blocks.
-    Task:
-        Based on the provided context and prompt, generate Go test functions that specifically target the uncovered lines
-
-2. Context: User wants to fix errors in generated tests.
-   Prompt: The tests you generated for File: /path/to/file.go have the following errors when run:
-            [Error details here]
-            Please fix the tests accordingly.
-    Explanation:
-        You will be provided with error messages from running the tests you generated.
-    Task:
-        Based on the provided context and prompt, fix the errors. 
-    
-Requirements:
-
-1. Coverage Focus:
-
-- Write tests ONLY for the specified uncovered lines
-- Each test must execute the uncovered code paths
-- Ensure all branches, error cases, and edge cases in uncovered blocks are tested
-
-
-2. Test File Handling:
-
-- If test file exists: append new tests to it
-- If test file doesn't exist: create <original_filename>_test.go with correct package name
-- Never modify existing test functions
-
-
-3. Test Quality:
-
-- Use table-driven tests where appropriate
-- Test all conditional branches (if/else, switch cases)
-- Test error returns and edge cases
-- Use meaningful test function names: Test<FunctionName>_<Scenario>
-- Include necessary setup and teardown
-- Mock external dependencies if needed
-
-
-4. Go Conventions:
-
-- Import "testing" package
-- Use t.Run() for subtests
-- Use t.Error/t.Fatal appropriately
-- Follow standard Go formatting
-
-5. Output:
-
-- Provide ONLY the Go test code
-- No explanations, comments, or summaries
-- No markdown formatting or code blocks
-- Ready to write directly to test file
-
-
-# Prohibited Actions:
-
-- Do not run go test
-- Do not generate commands for running tests
-- Do not generate coverage reports or HTML
-- Do not execute any commands
-- Do not provide analysis or explanations
-- Do not modify covered code
-- Do not write tests for already covered lines
-- Do not provide summaries or commentary
-- Do not provide output in any format other than raw Go code
-"""
-
-
-async def pre_write_hook(input_data, tool_use_id, context):
-    """
-    PreToolUse hook for Write operations.
-    Checks if the file being written is a _test.go file.
-
-    Args:
-        input_data: Event details including tool_name, tool_input, etc.
-        tool_use_id: ID to correlate PreToolUse and PostToolUse events
-        context: Hook context (unused in this implementation)
-    """
-    # Check if this is a PreToolUse event
-    if input_data['hook_event_name'] != 'PreToolUse':
-        return {}
-
-    # Check if the tool is Write
-    if input_data['tool_name'] == 'Write':
-        # Get the file path from tool input
-        file_path = input_data['tool_input'].get('file_path', '')
-
-        # Check if it's a _test.go file
-        if file_path.endswith('_test.go'):
-            logging.info(f"PreToolUse (ID: {tool_use_id}): Writing to test file: {file_path} - ALLOWED")
-            # Allow the operation to proceed
-            return {}
-        else:
-            logging.warning(f"PreToolUse (ID: {tool_use_id}): Attempted to write to non-test file: {file_path} - DENIED")
-            # Deny write operations to non-test files
-            return {
-                'hookSpecificOutput': {
-                    'hookEventName': input_data['hook_event_name'],
-                    'permissionDecision': 'deny',
-                    'permissionDecisionReason': f'Write operation blocked: Only _test.go files can be written. File: {file_path}'
-                }
-            }
-
-    return {}
-
-
-async def pre_bash_hook(input_data, tool_use_id, context):
-    """
-    PreToolUse hook for Bash operations.
-    Blocks any bash commands that attempt to run tests or generate coverage reports.
-
-    Args:
-        input_data: Event details including tool_name, tool_input, etc.
-        tool_use_id: ID to correlate PreToolUse and PostToolUse events
-        context: Hook context (unused in this implementation)
-    """
-    # Check if this is a PreToolUse event
-    if input_data['hook_event_name'] != 'PreToolUse':
-        return {}
-
-    # Check if the tool is Bash
-    if input_data['tool_name'] == 'Bash':
-        # Get the command from tool input
-        command = input_data['tool_input'].get('command', '')
-
-        # Block commands that run tests or generate coverage reports
-        prohibited_keywords = ['go test', 'coverprofile', 'coverage.out', 'go tool cover']
-        if any(keyword in command for keyword in prohibited_keywords):
-            logging.warning(f"PreToolUse (ID: {tool_use_id}): Attempted to run prohibited bash command: {command} - DENIED")
-            # Deny the operation
-            return {
-                'hookSpecificOutput': {
-                    'hookEventName': input_data['hook_event_name'],
-                    'permissionDecision': 'deny',
-                    'permissionDecisionReason': f'Bash command blocked: Running tests or generating coverage reports is not allowed. Command: {command}'
-                }
-            }
-        else:
-            logging.info(f"PreToolUse (ID: {tool_use_id}): Running allowed bash command: {command} - ALLOWED")
-
-    return {}
-
+logging.basicConfig(level=logging.INFO)
 
 async def init(repo_path: str) -> Tuple[bool, Optional[str]]:
     try:
@@ -205,10 +54,11 @@ async def init(repo_path: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-async def main():
+async def main(repo_path: str, target_coverage: float):
 
-    repo_path = "/Users/rutu/stuff/vscode-workspaces/spectro/stats"
-    # repo_path = "/Users/rutu/stuff/vscode-workspaces/spectro/golang-test-agent/calc"
+    system_prompt = agent_utils.read_system_prompt()
+
+    logging.info(f"Starting Go Test Coverage Agent for repository: {repo_path}, Target Coverage: {target_coverage}%")
 
     options = ClaudeAgentOptions(
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
@@ -216,20 +66,21 @@ async def main():
         cwd=repo_path,
         hooks={
             'PreToolUse': [
-                HookMatcher(matcher='Write', hooks=[pre_write_hook]),
-                HookMatcher(matcher='Bash', hooks=[pre_bash_hook]),
+                HookMatcher(matcher='Write', hooks=[agent_hooks.pre_write_hook]),
+                HookMatcher(matcher='Bash', hooks=[agent_hooks.pre_bash_hook]),
             ]
-        }
+        },
+        system_prompt=system_prompt
     )
 
     is_initialized, error_message = await init(repo_path)
 
     if not is_initialized:
-        print(f"Initialization failed: {error_message}")
+        logging.error(f"Initialization failed: {error_message}")
         return
     
     # instantiate the state machine
-    MACHINE = Machine(repo_path=repo_path, target_coverage=100.0, options=options)
+    MACHINE = Machine(repo_path=repo_path, target_coverage=target_coverage, options=options)
 
     # state stack to allow backtracking
     STATE_STACK = []
@@ -245,34 +96,41 @@ async def main():
         current_state = MACHINE.state
 
         STATE_STACK.append(current_state)
-        STATE_HISTORY.append(current_state)
+        STATE_HISTORY.append(copy.copy(current_state))
 
         i += 1
 
         if isinstance(current_state, MachineStateStart):
-            print(current_state.state_info)
+            logging.info(f"[{current_state.state_str}] : {current_state.state_info}")
+
             new_state = MachineStateAnalyze(
                 repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                 options=current_state.options, usage=current_state.usage
             )
+
+            logging.info(current_state)
+            logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
             MACHINE.transition(new_state)
             continue
 
         elif isinstance(current_state, MachineStateAnalyze):
-            print(current_state.state_info)
+            logging.info(f"[{current_state.state_str}] : {current_state.state_info}")
 
             success, current_coverage, error = agent_utils.get_total_coverage(current_state.repo_path)
 
             # handle errors in getting coverage
             if not success or current_coverage is None:
-                logging.error(f"Error getting total coverage: {error}")
+                logging.error(f"[{current_state.state_str}] : Error getting total coverage - {repr(error)}")
                 new_state = MachineStateError(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             current_state.last_coverage = current_state.current_coverage
@@ -280,63 +138,75 @@ async def main():
 
             # check termination conditions
             if current_state.current_coverage >= current_state.target_coverage:
-                print("c1")
-                logging.info(f"Target coverage {current_state.target_coverage}% achieved with current coverage {current_coverage}%. Terminating.")
+
+                logging.info(f"[{current_state.state_str}] : Target coverage {current_state.target_coverage}% achieved with current coverage {current_coverage}%. Terminating.")
+
                 new_state = MachineStateTerminate(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, coverage_achieved=current_coverage, successful_termination=True,
                     usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             # no more iterations left
             if current_state.n_iterations_left <= 0:
-                print("c2")
-                logging.info(f"Maximum iterations reached without achieving target coverage {current_state.target_coverage}%. Terminating.")
+                logging.info(f"[{current_state.state_str}] : Maximum iterations reached without achieving target coverage {current_state.target_coverage}%. Terminating.")
                 new_state = MachineStateTerminate(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, coverage_achieved=current_coverage,
                     successful_termination=False, errors="Maximum iterations reached without achieving target coverage.",
                     usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             # decrement the number of iterations left
             current_state.n_iterations_left -= 1
 
             if (current_state.current_coverage - current_state.last_coverage) < IMPROVEMENT_THRESHOLD:
-                print("c3")
-                print(f"Coverage improvement below threshold of {IMPROVEMENT_THRESHOLD}%. Terminating. Current coverage: {current_state.current_coverage}%, Last coverage: {current_state.last_coverage}%")
-                logging.info(f"Coverage improvement below threshold of {IMPROVEMENT_THRESHOLD}%. Terminating. Current coverage: {current_state.current_coverage}%, Last coverage: {current_state.last_coverage}%") 
+                logging.info(f"[{current_state.state_str}] : Coverage improvement below threshold of {IMPROVEMENT_THRESHOLD}%. Terminating."
+                            f" Current coverage: {current_state.current_coverage}%, Last coverage: {current_state.last_coverage}%") 
+
                 new_state = MachineStateTerminate(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, coverage_achieved=current_state.current_coverage,
                     successful_termination=False,
                     errors="Coverage improvement below threshold.", usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             success, coverage_data, error = agent_utils.calculate_per_file_coverage(current_state.repo_path)
 
             if not success or coverage_data is None:
-                logging.info(f"Error calculating per-file coverage: {error}")
-                print(error)
+                logging.info(f"[{current_state.state_str}] : Error calculating per-file coverage: {repr(error)}")
+
                 new_state = MachineStateError(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             file_queue = sorted(coverage_data.keys(), key=lambda f: (coverage_data[f]["total_statements"] - coverage_data[f]["covered_statements"]), reverse=True)
@@ -349,6 +219,8 @@ async def main():
                 usage=current_state.usage
             )
 
+            logging.info(current_state)
+            logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
             MACHINE.transition(new_state)
             continue
 
@@ -364,9 +236,11 @@ async def main():
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")               
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             current_state.last_coverage = current_state.current_coverage
@@ -374,16 +248,18 @@ async def main():
 
             # check termination conditions
             if current_state.current_coverage >= current_state.target_coverage:
-                print("c1")
                 logging.info(f"Target coverage {current_state.target_coverage}% achieved with current coverage {current_coverage}%. Terminating.")
                 new_state = MachineStateTerminate(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                     options=current_state.options, coverage_achieved=current_coverage, successful_termination=True,
                     usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             # if all files were processed, go back to analyze state
@@ -402,9 +278,12 @@ async def main():
                         repo_path=current_state.repo_path, target_coverage=current_state.target_coverage, 
                         options=current_state.options, error_message="State stack corrupted.",
                     )
+
+                    logging.info(current_state)
+                    logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                     MACHINE.transition(new_state)
                     STATE_STACK.append(new_state)
-                    STATE_HISTORY.append(new_state)
+                    STATE_HISTORY.append(copy.copy(new_state))
                     continue
 
                 new_state = last_analyze_state
@@ -421,11 +300,13 @@ async def main():
                 data=current_state.coverage_data[next_file], usage=current_state.usage
             )
 
+            logging.info(current_state)
+            logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
             MACHINE.transition(new_state)
             continue
 
         elif isinstance(current_state, MachineStateGenerateTest):
-            print(current_state.state_info)
+            logging.info(f"[{current_state.state_str}] : {current_state.state_info}")
 
             success, client, error = await agent_utils.get_client(current_state.options)
 
@@ -434,9 +315,12 @@ async def main():
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
 
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             current_state.client = client
@@ -448,16 +332,20 @@ async def main():
 
             if not success:
 
-                print(f"Error generating tests for file {current_state.filename}: {error}")
+                logging.error(f"Error generating tests for file {current_state.filename}: {repr(error)}")
 
                 new_state = MachineStateError(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
 
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
+
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             current_state.usage.input_tokens += usage_info.input_tokens
@@ -467,14 +355,16 @@ async def main():
             new_state = MachineStateRunTest(
                 repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                 options=current_state.options, last_file_generated=current_state.filename,
-                usage=current_state.usage, client=current_state.client
+                usage=current_state.usage, client=current_state.client, data=current_state.data
             )
 
+            logging.info(current_state)
+            logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
             MACHINE.transition(new_state)
             continue
 
         elif isinstance(current_state, MachineStateRunTest):
-            print(current_state.state_info)
+            logging.info(f"[{current_state.state_str}] : {current_state.state_info}")
 
             success, coverage_file, error = agent_utils.run_tests_and_get_coverage(current_state.repo_path)
 
@@ -483,12 +373,36 @@ async def main():
                 new_state = MachineStateFixing(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                     options=current_state.options, filename=current_state.last_file_generated,
-                    errors=error, client=current_state.client, usage=current_state.usage
+                    errors=error, client=current_state.client, usage=current_state.usage, 
+                    data=current_state.data
                 )
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 continue
 
-            elif not success and current_state.n_fixes_left <= 0:
+            success, all_expected_blocks_covered, error = agent_utils.check_if_expected_blocks_covered(
+                repo_path=current_state.repo_path, filename=current_state.last_file_generated, 
+                data=current_state.data
+            )
+
+            if not all_expected_blocks_covered and current_state.n_fixes_left > 0:
+                logging.error(f"Expected uncovered blocks in file {current_state.last_file_generated} are still not covered after running tests.")
+                current_state.n_fixes_left -= 1
+                new_state = MachineStateFixing(
+                    repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
+                    options=current_state.options, filename=current_state.last_file_generated,
+                    errors="Expected uncovered blocks are still not covered after running tests.", 
+                    client=current_state.client, usage=current_state.usage,
+                    data=current_state.data
+                )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
+                MACHINE.transition(new_state)
+                continue
+
+            if not success and current_state.n_fixes_left <= 0:
                 logging.error(f"Max fixes reached for file {current_state.last_file_generated}. Moving on.")
                 agent_utils.git_revert_file(current_state.repo_path, current_state.last_file_generated)
                 
@@ -504,6 +418,9 @@ async def main():
                     options=current_state.options, error_message="State stack corrupted.", 
                     usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
                 STATE_HISTORY.append(new_state)
@@ -515,9 +432,9 @@ async def main():
             continue 
 
         elif isinstance(current_state, MachineStateFixing):
-            print(current_state.state_info)
+            logging.info(f"[{current_state.state_str}] : {current_state.state_info}")
 
-            print(f"Fixing errors in tests for file {current_state.filename}:\n{current_state.errors}")
+            logging.info(f"Fixing errors for file {current_state.filename}: {repr(current_state.errors)}")
 
             success, usage_info, error = await agent_utils.fix_test_errors(
                 client=current_state.client, repo_path=current_state.repo_path,
@@ -534,6 +451,9 @@ async def main():
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                     options=current_state.options, error_message=error, usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
                 STATE_HISTORY.append(new_state)
@@ -551,6 +471,9 @@ async def main():
                     options=current_state.options, error_message="State stack corrupted.", 
                     usage=current_state.usage
                 )
+
+                logging.info(current_state)
+                logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
                 STATE_HISTORY.append(new_state)
@@ -561,12 +484,14 @@ async def main():
             MACHINE.transition(new_state)
             continue
         else:
-            print(f"Unknown state encountered: {current_state.state_str}")
+            logging.info(f"Unknown state encountered")
             new_state = MachineStateError(
                 repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
                 options=current_state.options, error_message="Unknown state encountered.",
                 usage=current_state.usage
             )
+
+            logging.info(current_state)
             MACHINE.transition(new_state)
             STATE_STACK.append(new_state)
             STATE_HISTORY.append(new_state)
@@ -587,9 +512,34 @@ async def main():
 
     print("\n\n=== STATE HISTORY ===")
     for idx, state in enumerate(STATE_HISTORY):
-        print(f"{idx+1}. {state.state_str}")
+        print(f"{idx+1}. {state}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    parser = argparse.ArgumentParser(description="Go Test Coverage Agent")
+    parser.add_argument(
+        "--repo-path",
+        type=str,
+        required=True,
+        help="Absolute Path to the Go repository to analyze.",
+    )
+    parser.add_argument(
+        "--target-coverage",
+        type=float,
+        required=True,
+        help="Target code coverage percentage to achieve. (<= 100)",
+    )
+
+    args = parser.parse_args()
+
+    repo_path = args.repo_path
+    target_coverage = args.target_coverage
+
+    if target_coverage < 0.0 or target_coverage > 100.0:
+        logging.error("Target coverage must be between 0 and 100.")
+        raise ValueError(f"Target coverage must be between 0 and 100. Value provided: {target_coverage}")
+
+    asyncio.run(main(repo_path=repo_path, target_coverage=target_coverage))
+
 
