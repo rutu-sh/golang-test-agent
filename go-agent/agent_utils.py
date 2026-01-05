@@ -13,6 +13,12 @@ import logging
 def read_system_prompt(filename: str = "system_prompt.md") -> str:
     """
     Reads the system prompt from a markdown file.
+
+    Args:
+        filename (str): The path to the system prompt file.
+
+    Returns:
+        str: The content of the system prompt file.
     """
     if not os.path.exists(filename):
         logging.warning(f"System prompt file {filename} not found. Using default prompt.")
@@ -26,6 +32,13 @@ def run_tests_and_get_coverage(repo_path: str) -> Tuple[bool, Optional[str], Opt
     """
     Run `go test -coverprofile=coverage.out` in the specified repository path
     Then run `go tools cover -func=coverage.out` to get coverage details. 
+
+    Args:
+        repo_path (str): The path to the Go repository.
+    
+    Returns:
+        Tuple[bool, Optional[str], Optional[str]]: 
+            A tuple containing a success flag, the path to the coverage file if successful, and an error message if any.
     """
 
     if repo_path.endswith('/'):
@@ -50,6 +63,13 @@ def run_tests_and_get_coverage(repo_path: str) -> Tuple[bool, Optional[str], Opt
 def get_total_coverage(repo_path: str) -> Tuple[bool, Optional[float], Optional[str]]:
     """
     Read the coverage.out file and extract total coverage percentage.
+
+    Args:
+        repo_path (str): The path to the Go repository.
+
+    Returns:
+        Tuple[bool, Optional[float], Optional[str]]:
+            A tuple containing a success flag, the total coverage percentage if successful, and an error message if any.
     """
 
     try:
@@ -95,6 +115,15 @@ def get_total_coverage(repo_path: str) -> Tuple[bool, Optional[float], Optional[
 def check_if_expected_blocks_covered(repo_path: str, filename: str, data: dict) -> Tuple[bool, bool, Optional[str]]:
     """
     Check if all expected blocks in the coverage data are covered.
+
+    Args:
+        repo_path (str): The path to the Go repository.
+        filename (str): The name of the file to check.
+        data (dict): The coverage data containing expected blocks.
+    
+    Returns:
+        Tuple[bool, bool, Optional[str]]:
+            A tuple containing a success flag, a flag indicating if all expected blocks are covered, and an error message if any.
     """
 
     try:
@@ -161,6 +190,13 @@ def calculate_per_file_coverage(repo_path: str) -> Tuple[bool, Optional[dict], O
     """
     Read the coverage_func.out file and calculate per-file coverage summary.
     output_file = f"{repo_path}/coverage_func.out"
+
+    Args:
+        repo_path (str): The path to the Go repository.
+
+    Returns:
+        Tuple[bool, Optional[dict], Optional[str]]:
+            A tuple containing a success flag, a dictionary with per-file coverage data if successful, and an error message if any.
     """
 
     try:
@@ -244,6 +280,13 @@ def calculate_per_file_coverage(repo_path: str) -> Tuple[bool, Optional[dict], O
 async def get_client(options: ClaudeAgentOptions) -> Tuple[bool, Optional[ClaudeSDKClient], Optional[str]]:
     """
     Initialize and return a ClaudeSDKClient based on the provided options.
+
+    Args:
+        options (ClaudeAgentOptions): The options for initializing the ClaudeSDKClient.
+    
+    Returns:
+        Tuple[bool, Optional[ClaudeSDKClient], Optional[str]]:
+            A tuple containing a success flag, the initialized ClaudeSDKClient if successful, and an error message if any.
     """
 
     try:
@@ -260,6 +303,16 @@ async def get_client(options: ClaudeAgentOptions) -> Tuple[bool, Optional[Claude
 async def generate_test_for_file(client: ClaudeSDKClient, repo_path: str, filename: str, data: dict) -> Tuple[bool, Optional[UsageInfo], Optional[str]]:
     """
     Use the ClaudeSDKClient to generate tests for a specific file based on coverage data.
+
+    Args:
+        client (ClaudeSDKClient): The Claude SDK client to use for generating tests.
+        repo_path (str): The path to the Go repository.
+        filename (str): The name of the file to generate tests for.
+        data (dict): The coverage data containing uncovered blocks.
+    
+    Returns:
+        Tuple[bool, Optional[UsageInfo], Optional[str]]:
+            A tuple containing a success flag, usage information if successful, and an error message if any.
     """
 
     try:
@@ -296,6 +349,17 @@ async def generate_test_for_file(client: ClaudeSDKClient, repo_path: str, filena
 async def fix_test_errors(client: ClaudeSDKClient, repo_path: str, usage_info: UsageInfo, filename: str, errors: str) -> Tuple[bool, Optional[UsageInfo], Optional[str]]:
     """
     Use the ClaudeSDKClient to fix errors in the generated tests for a specific file.
+
+    Args:
+        client (ClaudeSDKClient): The Claude SDK client to use for fixing tests.
+        repo_path (str): The path to the Go repository.
+        usage_info (UsageInfo): The current usage information to update.
+        filename (str): The name of the file with test errors.
+        errors (str): The error messages from running the tests.
+    
+    Returns:
+        Tuple[bool, Optional[UsageInfo], Optional[str]]:
+            A tuple containing a success flag, updated usage information if successful, and an error message if any.
     """
 
     try:
@@ -324,6 +388,14 @@ async def fix_test_errors(client: ClaudeSDKClient, repo_path: str, usage_info: U
 def git_revert_file(repo_path: str, filename: str) -> Tuple[bool, Optional[str]]:
     """
     Revert changes to a specific file using git checkout.
+
+    Args:
+        repo_path (str): The path to the Go repository.
+        filename (str): The name of the file to revert.
+
+    Returns:
+        Tuple[bool, Optional[str]]:
+            A tuple containing a success flag and an error message if any.
     """
 
     try:
