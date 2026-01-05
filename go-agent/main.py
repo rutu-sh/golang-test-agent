@@ -66,7 +66,7 @@ async def main(repo_path: str, target_coverage: float):
         cwd=repo_path,
         hooks={
             'PreToolUse': [
-                HookMatcher(matcher='Write', hooks=[agent_hooks.pre_write_hook]),
+                HookMatcher(matcher='Write|Edit', hooks=[agent_hooks.pre_write_hook]),
                 HookMatcher(matcher='Bash', hooks=[agent_hooks.pre_bash_hook]),
             ]
         },

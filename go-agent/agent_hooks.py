@@ -17,7 +17,7 @@ async def pre_write_hook(input_data, tool_use_id, context) -> dict:
         return {}
 
     # Check if the tool is Write
-    if input_data['tool_name'] == 'Write':
+    if input_data['tool_name'] == 'Write' or input_data['tool_name'] == 'Edit':
         # Get the file path from tool input
         file_path = input_data['tool_input'].get('file_path', '')
 
