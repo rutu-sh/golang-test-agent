@@ -125,25 +125,24 @@ def check_if_expected_blocks_covered(repo_path: str, filename: str, data: dict) 
                 continue 
 
             block = parts[0].split(':')[0]
-            filename = block.replace(data['module_name'], '').lstrip('/')
+            filename = block.replace(module_name, '').lstrip('/')
             block_statements = int(parts[1])
             is_covered = True if int(parts[2]) else False
 
 
             blocks_not_covered = []
 
-            if filename == data['filename']:
-                for expected_block in data['blocks']:
-                    block_info = parts[0].split(':')[-1]
-                    start = block_info.split(',')[0]
-                    end = block_info.split(',')[1]
+            for expected_block in data['blocks']:
+                block_info = parts[0].split(':')[-1]
+                start = block_info.split(',')[0]
+                end = block_info.split(',')[1]
 
-                    if start == expected_block['start'] and end == expected_block['end']:
-                        if is_covered == 0:
-                            blocks_not_covered.append({
-                                "start": start,
-                                "end": end
-                            })
+                if start == expected_block['start'] and end == expected_block['end']:
+                    if is_covered == 0:
+                        blocks_not_covered.append({
+                            "start": start,
+                            "end": end
+                        })
 
             if len(blocks_not_covered) == 0:
                 return True, True, "All expected blocks are covered."

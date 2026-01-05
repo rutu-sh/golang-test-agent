@@ -387,7 +387,7 @@ async def main(repo_path: str, target_coverage: float):
             )
 
             if not all_expected_blocks_covered and current_state.n_fixes_left > 0:
-                logging.error(f"Expected uncovered blocks in file {current_state.last_file_generated} are still not covered after running tests.")
+                logging.error(f"Expected uncovered blocks in file {current_state.last_file_generated} are still not covered after running tests, {repr(error)}")
                 current_state.n_fixes_left -= 1
                 new_state = MachineStateFixing(
                     repo_path=current_state.repo_path, target_coverage=current_state.target_coverage,
@@ -423,7 +423,7 @@ async def main(repo_path: str, target_coverage: float):
                 logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             new_state = last_select_file_state
@@ -456,7 +456,7 @@ async def main(repo_path: str, target_coverage: float):
                 logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             while STATE_STACK:
@@ -476,7 +476,7 @@ async def main(repo_path: str, target_coverage: float):
                 logging.info(f"[{current_state.state_str}] : Transitioning to new state: {new_state.state_str}")
                 MACHINE.transition(new_state)
                 STATE_STACK.append(new_state)
-                STATE_HISTORY.append(new_state)
+                STATE_HISTORY.append(copy.copy(new_state))
                 continue
 
             new_state = last_run_test_state
@@ -494,7 +494,7 @@ async def main(repo_path: str, target_coverage: float):
             logging.info(current_state)
             MACHINE.transition(new_state)
             STATE_STACK.append(new_state)
-            STATE_HISTORY.append(new_state)
+            STATE_HISTORY.append(copy.copy(new_state))
             break
 
     success, current_coverage, error = agent_utils.get_total_coverage(current_state.repo_path)

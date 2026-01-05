@@ -41,6 +41,8 @@ class MachineStateAnalyze(MachineStateGlobals):
     last_coverage: float = -1 * IMPROVEMENT_THRESHOLD - 0.1
 
     def __str__(self) -> str:
+        if self.current_coverage < 0:
+            return f"[{self.state_str}] {self.state_info} | Target Coverage: {self.target_coverage}% | Current Coverage: N/A | Iterations Left: {self.n_iterations_left}"
         return f"[{self.state_str}] {self.state_info} | Target Coverage: {self.target_coverage}% | Current Coverage: {self.current_coverage}% | Iterations Left: {self.n_iterations_left}"
 
 @dataclass
